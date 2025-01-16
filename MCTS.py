@@ -19,7 +19,6 @@ from draw import plot_2d_array
 from Arguments import Arguments
 import argparse
 
-
 class MCTS:
     def __init__(self, search_space, tree_height, fold, arch_code):
         assert type(search_space)    == type([])
@@ -235,8 +234,7 @@ class MCTS:
     def populate_training_data(self):
         self.reset_node_data()
         for k, v in self.samples.items():
-            self.ROOT.put_in_bag(json.loads(k), v)    
-
+            self.ROOT.put_in_bag(json.loads(k), v)
 
     def populate_prediction_data(self):
         # self.reset_node_data()
@@ -346,7 +344,7 @@ class MCTS:
         while len(self.TASK_QUEUE) > 0:            
            
             job = self.TASK_QUEUE.pop()
-            sample_node = self.sample_nodes.pop()               
+            sample_node = self.sample_nodes.pop()
             if type(job[0]) != type([]):
                 job = [job]            
             if self.explorations['phase'] == 0:

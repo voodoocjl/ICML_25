@@ -6,11 +6,15 @@ import torch.nn as nn
 from torch import optim
 from torch.utils.data import DataLoader, TensorDataset
 from sklearn.metrics import accuracy_score
-from Network import Attention, RNN, normalize, FC
+from Network import Attention, FCN, normalize, FC
 from FusionModel import cir_to_matrix
 import time
 
-torch.cuda.is_available = lambda : False
+from GVAE_translator import generate_circuits, get_gate_and_adj_matrix
+from GVAE_model import GVAE, preprocessing
+from configs import configs
+
+# torch.cuda.is_available = lambda : False
 
 
 def get_label(energy, tree_height, mean = None):
@@ -69,8 +73,8 @@ class Classifier:
         self.fold             = fold
         # self.model            = Linear(self.input_dim_2d, 2)
         # self.model            = Mlp(self.input_dim_2d, 6, 2)        
-        # self.model            = RNN(arch_code[0], 16, 2)
-        self.model            = FC(arch_code)
+        self.model            = FCN(arch_code)
+        # self.model            = FC(arch_code)
         
         self.loss_fn          = nn.CrossEntropyLoss() #nn.MSELoss()
         self.l_rate           = 0.001
@@ -83,6 +87,11 @@ class Classifier:
         self.labels           = None
         self.mean             = 0        
         self.period           = 10
+
+        checkpoint = torch.load('pretrained/model-circuits_4_qubits.json.pt', map_location=torch.device('cpu'))
+        input_dim = 2 + 5 + self.arch_code[0]
+        self.GVAE_model = GVAE((input_dim, 32, 64, 128, 64, 32, 16), normalize=True, dropout=0.3, **configs[4]['GAE'])
+        self.GVAE_model.load_state_dict(checkpoint['model_state'])
         
 
 
@@ -96,10 +105,11 @@ class Classifier:
                 net = json.loads(k)            
                 sampled_nets.append(net)
                 nets_maeinv.append(v)
-            self.nets = torch.from_numpy(np.asarray(sampled_nets, dtype=np.float32))
-            self.nets = normalize(self.nets)       
+            # self.nets = torch.from_numpy(np.asarray(sampled_nets, dtype=np.float32))
+            # self.nets = normalize(self.nets)
+            self.nets = self.arch_to_z(sampled_nets)
             self.maeinv = torch.from_numpy(np.asarray(nets_maeinv, dtype=np.float32).reshape(-1, 1))
-            self.labels = get_label(self.maeinv, tree_height)            
+            self.labels = get_label(self.maeinv, tree_height)
             if torch.cuda.is_available():
                 self.nets = self.nets.cuda()
                 self.maeinv = self.maeinv.cuda()
@@ -129,10 +139,10 @@ class Classifier:
         
         for param in self.model.parameters():
             param.requires_grad = True
-        for param in [self.model.cls1.weight, self.model.cls1.bias,
-                      self.model.cls2.weight, self.model.cls2.bias,
-                      self.model.cls3.weight, self.model.cls3.bias]:
-            param.requires_grad = True
+        # for param in [self.model.cls1.weight, self.model.cls1.bias,
+        #               self.model.cls2.weight, self.model.cls2.bias,
+        #               self.model.cls3.weight, self.model.cls3.bias]:
+        #     param.requires_grad = True
                     
         for epoch in range(self.epochs):
             for x, y in train_loader:
@@ -141,7 +151,7 @@ class Classifier:
                 # forward to get predicted values
                 outputs = self.model(x)                
                 loss = self.loss_fn(outputs[0][:,:,:n_heads], y.long())
-                loss.backward()  # back props
+                loss.backward(retain_graph=True)  # back props
                 # grads = [param.grad.detach().flatten() for param in self.model.parameters() if param.grad is not None]
                 # norm = torch.cat(grads).norm()
                 # print('Grad Norm: ', norm)
@@ -156,10 +166,26 @@ class Classifier:
         acc = accuracy_score(true_label.numpy(), pred_label.numpy())
         self.training_accuracy.append(acc)
 
+    def arch_to_z(self, archs):
+        adj_list, op_list = [], []
+        for net in archs:
+            circuit_ops = generate_circuits(net)
+            _, gate_matrix, adj_matrix = get_gate_and_adj_matrix(circuit_ops)
+            ops = torch.tensor(gate_matrix, dtype=torch.float32).unsqueeze(0)
+            adj = torch.tensor(adj_matrix, dtype=torch.float32).unsqueeze(0)            
+            adj_list.append(adj)
+            op_list.append(ops)
+
+        adj = torch.cat(adj_list, dim=0)
+        ops = torch.cat(op_list, dim=0)
+        adj, ops, prep_reverse = preprocessing(adj, ops, **configs[4]['prep'])
+        mu, logvar = self.GVAE_model.encoder(ops, adj)
+        return mu
     
     def predict(self, remaining, arch):
         assert type(remaining) == type({})
         remaining_archs = []
+        adj_list, op_list = [], []
         for k, v in remaining.items():
             net = json.loads(k)
             if arch['phase'] == 0:
@@ -167,13 +193,17 @@ class Classifier:
                 net = cir_to_matrix(net, arch['enta'], self.arch_code, self.fold)
             else:
                 net = insert_job(arch['enta'], net)
-                net = cir_to_matrix(arch['single'], net, self.arch_code, self.fold)           
+                net = cir_to_matrix(arch['single'], net, self.arch_code, self.fold)
             remaining_archs.append(net)
-        remaining_archs = torch.from_numpy(np.asarray(remaining_archs, dtype=np.float32))
-        remaining_archs = normalize(remaining_archs)
+            
+        remaining_archs = self.arch_to_z(remaining_archs)
+        
+        # remaining_archs = torch.from_numpy(np.asarray(remaining_archs, dtype=np.float32))
+        # remaining_archs = normalize(remaining_archs)        
                 
         if torch.cuda.is_available():
             remaining_archs = remaining_archs.cuda()
+            self.model.cuda()
         t1 = time.time()
         outputs = self.model(remaining_archs)
         print('Prediction time: ', time.time()-t1)
@@ -258,13 +288,13 @@ class Classifier:
             
             self.train()
             outputs = self.model(self.nets)
-            if torch.cuda.is_available():
-                self.nets = self.nets.cpu()
-                outputs   = outputs.cpu()
+            # if torch.cuda.is_available():
+            #     self.nets = self.nets.cpu()
+            #     outputs   = outputs.cpu()
             predictions = {}
-            for k in range(0, len(self.nets)):            
+            for k in range(0, len(self.nets)):
                 arch_str = list(self.samples)[k]
-                predictions[arch_str] = outputs[1][k].detach().numpy().tolist()  # arch_str -> pred_label
+                predictions[arch_str] = outputs[1][k].cpu().detach().numpy().tolist()  # arch_str -> pred_label
             assert len(predictions) == len(self.nets) 
         else:
             predictions = self.pred_labels

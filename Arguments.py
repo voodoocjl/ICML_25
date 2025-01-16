@@ -4,6 +4,8 @@ class Arguments:
         self.device     = 'cpu'        
         self.clr        = 0.005
         self.qlr        = 0.01
+
+        self.allowed_gates = ['Identity', 'RX', 'RY', 'RZ', 'C(U3)']
         
         if task != 'MOSI':
             self.n_qubits   = 4 #10           

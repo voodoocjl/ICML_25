@@ -4,6 +4,8 @@ from torch import nn
 from Arguments import Arguments
 args = Arguments()
 
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
 class Linear(nn.Module):
     def __init__(self, input_dim, output_dim):
         super(Linear, self).__init__()
@@ -31,23 +33,44 @@ class Mlp(nn.Module):
 
 class FCN(nn.Module):
     """Fully Convolutional Network"""
-    def __init__(self, n_channels, output_size):
+    def __init__(self, arch):
         super(FCN, self).__init__()
-        self.layer1 = nn.Sequential(
-            nn.Conv2d(1, n_channels, kernel_size= (3, 3), padding='same'),
-            nn.ReLU()
-            )
-        self.layer2 = nn.Sequential(
-            nn.Conv2d(n_channels, output_size, kernel_size= (3, 3)),
-            nn.ReLU(),
-            nn.AdaptiveMaxPool2d((1, 1))
-            )
+        self.conv = nn.Conv2d(in_channels=1, out_channels=16, kernel_size=(3, 3), stride=1, padding=0)
+        self.pool = nn.MaxPool2d(kernel_size=2, stride=2, padding=0)
+        self.flatten = nn.Flatten()
 
-    def forward(self, x):
-        y = self.layer1(x)
-        y = self.layer2(y).squeeze()
-        # y[:,-1] = torch.sigmoid(y[:,-1])
-        return y
+        # self.fc11 = nn.Linear(16 * 17 * 8, 64)
+        self.fc11 = None
+        self.fc12 = nn.Linear(64, 32)
+        self.fc13 = nn.Linear(32, 32)
+        
+        self.cls1= nn.Linear(64,2)
+        self.cls2= nn.Linear(32,2)
+        self.cls3= nn.Linear(32,2)
+
+    def forward(self, x):        
+
+        x = x.unsqueeze(1)
+        x = torch.relu(self.conv(x))
+        x = self.pool(x)
+        x = self.flatten(x)
+
+        self.fc11 = nn.Linear(x.shape[1], 64).to(device)
+
+        y1 = torch.relu(self.fc11(x))
+        y2 = torch.relu(self.fc12(y1))
+        y3 = torch.relu(self.fc13(y2))
+
+        y1 = self.cls1(y1)
+        y2 = self.cls2(y2)
+        y3 = self.cls3(y3)
+
+        preds_c1 = torch.argmax(y1, dim=1)
+        preds_c2 = torch.argmax(y2, dim=1)
+        preds_c3 = torch.argmax(y3, dim=1)
+        preds = torch.stack((preds_c3, preds_c2, preds_c1),dim=1)
+       
+        return [torch.stack((y3, y2, y1), dim=1).transpose(1,2), preds]
 
 
 class ACN(nn.Module):
