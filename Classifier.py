@@ -60,6 +60,16 @@ def insert_job(change_code, job):
                     job.append(change)
         return job
 
+def initialize_model_parameters(model):
+    for layer in model.children():
+        if hasattr(layer, 'reset_parameters'):
+            layer.reset_parameters()
+
+def print_grad_norm(model):
+    grads = [param.grad.detach().flatten() for param in model.parameters() if param.grad is not None]
+    norm = torch.cat(grads).norm()
+    print('Grad Norm: ', norm)
+
 class Classifier:
     def __init__(self, samples, arch_code, node_id, tree_height, fold):
         assert type(samples) == type({})        
@@ -88,10 +98,10 @@ class Classifier:
         self.mean             = 0        
         self.period           = 10
 
-        checkpoint = torch.load('pretrained/model-circuits_4_qubits.json.pt', map_location=torch.device('cpu'))
+        checkpoint = torch.load('pretrained/best_model.pt', map_location=torch.device('cpu'))
         input_dim = 2 + 5 + self.arch_code[0]
         self.GVAE_model = GVAE((input_dim, 32, 64, 128, 64, 32, 16), normalize=True, dropout=0.3, **configs[4]['GAE'])
-        self.GVAE_model.load_state_dict(checkpoint['model_state'])
+        self.GVAE_model.load_state_dict(checkpoint)
         
 
 
@@ -119,11 +129,9 @@ class Classifier:
 
 
     def train(self):
-        if self.training_counter == 0:
-            self.epochs = 1000
-        else:
-            self.epochs = 500
-        self.training_counter += 1
+        
+        self.epochs = 100
+        
         # in a rare case, one branch has no networks
         if len(self.nets) == 0:
             return
@@ -134,29 +142,36 @@ class Classifier:
         n_heads = self.tree_height - 1
         train_data = TensorDataset(nets, labels)
         train_loader = DataLoader(train_data, batch_size=64, shuffle=True)
+        initialize_model_parameters(self.model)
         if torch.cuda.is_available():
             self.model.cuda()
         
-        for param in self.model.parameters():
-            param.requires_grad = True
+        # for param in self.model.parameters():
+        #     param.requires_grad = True
         # for param in [self.model.cls1.weight, self.model.cls1.bias,
         #               self.model.cls2.weight, self.model.cls2.bias,
         #               self.model.cls3.weight, self.model.cls3.bias]:
         #     param.requires_grad = True
                     
         for epoch in range(self.epochs):
-            for x, y in train_loader:
+            for x, y in train_loader:                
                 # clear grads
                 self.optimizer.zero_grad()
                 # forward to get predicted values
                 outputs = self.model(x)                
                 loss = self.loss_fn(outputs[0][:,:,:n_heads], y.long())
                 loss.backward(retain_graph=True)  # back props
-                # grads = [param.grad.detach().flatten() for param in self.model.parameters() if param.grad is not None]
-                # norm = torch.cat(grads).norm()
-                # print('Grad Norm: ', norm)
-                # nn.utils.clip_grad_norm_(self.model.parameters(), 5)
+
+                # gradient norm
+                # print_grad_norm(self.model)
+
                 self.optimizer.step()  # update the parameters
+
+            # pred = self.model(nets)        
+            # pred_label = pred[1][:, :n_heads].float().cpu()
+            # true_label = self.labels.cpu()        
+            # acc = accuracy_score(true_label.numpy(), pred_label.numpy())
+            # print(f'Epoch: {epoch}, Training Accuracy: {acc:.2f}')
 
         # training accuracy
         pred = self.model(nets)
