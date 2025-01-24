@@ -105,7 +105,7 @@ class MCTS:
         file_enta = args.file_enta
         if self.task != 'MOSI':
             sorted_changes = [k for k, v in sorted(self.samples_compact.items(), key=lambda x: x[1], reverse=True)]
-            epochs = 20
+            epochs = 1
             samples = 20            
         else:
             sorted_changes = [k for k, v in sorted(self.samples_compact.items(), key=lambda x: x[1])]
@@ -150,7 +150,7 @@ class MCTS:
         self.weight = best_model.state_dict()
         self.samples_true[json.dumps(np.int8(arch).tolist())] = report['mae']
         self.samples_compact = {}
-        # arch_next = self.Langevin_update(arch)
+        arch_next = self.Langevin_update(arch)
 
         if report['mae'] > self.best['acc']:
             if self.task != 'MOSI':
@@ -236,24 +236,33 @@ class MCTS:
 
     def Langevin_update(self, x, n_steps=20, step_size=0.01):
         
-        target_snr = 0.1
+        snr = 10
+        x = self.ROOT.classifier.arch_to_z([x])
+        x_norm = torch.norm(x.reshape(x.shape[0], -1), dim=-1).mean()
+        x_valid_list = []
+        for i in range(100):
+            noise = torch.randn_like(x)
+            noise_norm = torch.norm(noise.reshape(noise.shape[0], -1), dim=-1).mean()
+            step_size = (1/snr * (x_norm / noise_norm)) ** 2
+            x_new = x + step_size * noise
+            x_new = self.ROOT.classifier.GVAE_model.decoder(x_new)
         
         # alpha = torch.ones_like(t)
 
-        for i in range(n_steps):
+        # for i in range(n_steps):
 
-            x, grad = self.get_grad(x)
-            noise = torch.randn_like(grad)
+        #     x, grad = self.get_grad(x)
+        #     noise = torch.randn_like(grad)
             
-            grad_norm = torch.norm(grad.reshape(grad.shape[0], -1), dim=-1).mean()
-            noise_norm = torch.norm(noise.reshape(noise.shape[0], -1), dim=-1).mean()
+        #     grad_norm = torch.norm(grad.reshape(grad.shape[0], -1), dim=-1).mean()
+        #     noise_norm = torch.norm(noise.reshape(noise.shape[0], -1), dim=-1).mean()
 
-            step_size = (target_snr * noise_norm / grad_norm) ** 2 * 2
-            x_mean = x + step_size * grad
-            # x = x_mean + torch.sqrt(step_size * 2) * noise
-            x = x_mean + noise
+        #     step_size = (target_snr * noise_norm / grad_norm) ** 2 * 2
+        #     x_mean = x + step_size * grad
+        #     # x = x_mean + torch.sqrt(step_size * 2) * noise
+        #     x = x_mean + noise
 
-        return x, x_mean
+        return x_valid_list
 
     def dump_all_states(self, num_samples):
         node_path = 'states/mcts_agent'
@@ -679,7 +688,7 @@ if __name__ == '__main__':
         n_jobs = len(jobs)
         step = n_jobs // num_processes
         res = n_jobs % num_processes
-        debug = False
+        debug = True
         if not debug:
             with Manager() as manager:
                 q = manager.Queue()
