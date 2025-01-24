@@ -73,11 +73,12 @@ def translator(single_code, enta_code, trainable, arch_code, fold=1):
     return updated_design
 
 def cir_to_matrix(x, y, arch_code, fold=1):
-    x = qubit_fold(x, 0, fold)
-    y = qubit_fold(y, 1, fold)
-    qubits = arch_code[0]
+    # x = qubit_fold(x, 0, fold)
+    # y = qubit_fold(y, 1, fold)
+    
+    qubits = int(arch_code[0] / fold)
     layers = arch_code[1]
-    entangle = gen_arch(y, arch_code)
+    entangle = gen_arch(y, [qubits, layers])
     entangle = np.array([entangle]).reshape(layers, qubits).transpose(1,0)
     single = np.ones((qubits, 2*layers))
     # [[1,1,1,1]

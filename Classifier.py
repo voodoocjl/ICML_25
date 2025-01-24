@@ -99,7 +99,9 @@ class Classifier:
         self.period           = 10
 
         checkpoint = torch.load('pretrained/best_model.pt', map_location=torch.device('cpu'))
-        input_dim = 2 + 5 + self.arch_code[0]
+        # checkpoint = torch.load('pretrained/5_best_model.pt', map_location=torch.device('cpu'))
+
+        input_dim = 2 + 5 + int(self.arch_code[0]/self.fold)
         self.GVAE_model = GVAE((input_dim, 32, 64, 128, 64, 32, 16), normalize=True, dropout=0.3, **configs[4]['GAE'])
         self.GVAE_model.load_state_dict(checkpoint)
         
@@ -183,9 +185,10 @@ class Classifier:
 
     def arch_to_z(self, archs):
         adj_list, op_list = [], []
+        arch_code = [int(self.arch_code[0] / self.fold), self.arch_code[1]]
         for net in archs:
-            circuit_ops = generate_circuits(net)
-            _, gate_matrix, adj_matrix = get_gate_and_adj_matrix(circuit_ops)
+            circuit_ops = generate_circuits(net, arch_code)
+            _, gate_matrix, adj_matrix = get_gate_and_adj_matrix(circuit_ops, arch_code)
             ops = torch.tensor(gate_matrix, dtype=torch.float32).unsqueeze(0)
             adj = torch.tensor(adj_matrix, dtype=torch.float32).unsqueeze(0)            
             adj_list.append(adj)
@@ -203,7 +206,7 @@ class Classifier:
         adj_list, op_list = [], []
         for k, v in remaining.items():
             net = json.loads(k)
-            if arch['phase'] == 0:
+            if len(net) == len(arch['single'][0]):            
                 net = insert_job(arch['single'], net) 
                 net = cir_to_matrix(net, arch['enta'], self.arch_code, self.fold)
             else:

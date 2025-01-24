@@ -40,6 +40,7 @@ class FCN(nn.Module):
         self.flatten = nn.Flatten()
 
         self.fc11 = nn.Linear(1792, 64)
+        # self.fc11 = nn.Linear(2240, 64)
         # self.fc11 = None
         self.fc12 = nn.Linear(64, 32)
         self.fc13 = nn.Linear(32, 32)

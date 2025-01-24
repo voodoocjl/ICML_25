@@ -18,6 +18,7 @@ from prepare import *
 from draw import plot_2d_array
 from Arguments import Arguments
 import argparse
+import torch.nn as nn
 
 class MCTS:
     def __init__(self, search_space, tree_height, fold, arch_code):
@@ -70,8 +71,9 @@ class MCTS:
         self.explorations = {'phase': 0, 'iteration': 0, 'single':None, 'enta': None, 'rate': [0.001, 0.0005, 0.002], 'rate_decay': [0.006, 0.004, 0.002, 0]}
         self.best = {'acc': 0, 'model':[]}
         self.task = ''
-        self.history = [[], []]
+        self.history = [[] for i in range(2)]
         self.qubit_used = []
+        self.period = 1
 
     def init_train(self, numbers=50):
         
@@ -79,7 +81,7 @@ class MCTS:
         self.populate_prediction_data()
         print("finished")
         print("\npredict and partition nets in search space...")
-        self.predict_nodes()        
+        self.predict_nodes()
         self.check_leaf_bags()
         print("finished")
         self.print_tree()
@@ -104,11 +106,11 @@ class MCTS:
         if self.task != 'MOSI':
             sorted_changes = [k for k, v in sorted(self.samples_compact.items(), key=lambda x: x[1], reverse=True)]
             epochs = 20
-            samples = 10            
+            samples = 20            
         else:
             sorted_changes = [k for k, v in sorted(self.samples_compact.items(), key=lambda x: x[1])]
             epochs = 3
-            samples = 30            
+            samples = 30
         sorted_changes = [change for change in sorted_changes if len(eval(change)) == self.stages]
 
         filename = [file_single, file_enta]
@@ -123,7 +125,8 @@ class MCTS:
         
         print('Current Change: ', best_change)
        
-        if phase == 0:
+        # if phase == 0:
+        if len(best_change[0]) == len(self.explorations['single'][0]):
             best_change_full = self.insert_job(self.explorations['single'], best_change)
             single = best_change_full
             enta = self.explorations['enta']
@@ -147,6 +150,8 @@ class MCTS:
         self.weight = best_model.state_dict()
         self.samples_true[json.dumps(np.int8(arch).tolist())] = report['mae']
         self.samples_compact = {}
+        # arch_next = self.Langevin_update(arch)
+
         if report['mae'] > self.best['acc']:
             if self.task != 'MOSI':
                 self.best['acc'] = report['mae']
@@ -161,35 +166,33 @@ class MCTS:
             metrics = report['mae']
             writer.writerow([self.ITERATION, best_change_full, metrics])        
         
-        if self.stages == 3:
+        if self.stages == self.period:
             self.stages = 0
-            self.history[phase].append(qubits)            
+            self.history.append(qubits)            
             phase = 1 - phase       # switch phase
             self.ROOT.base_code = None
             # if self.history[phase] != []:
             #     qubits = self.history[phase][-1]
             # else:
             #     qubits = []
-            qubits = []
-            self.qubit_used = qubits
+            # qubits = []
+            self.qubit_used = self.history[-2:]
             self.set_arch(phase, best_change_full)
             self.samples_compact = {}
             self.explorations['iteration'] += 1
             print(Color.BLUE + 'Phase Switch: {}'.format(phase) + Color.RESET)
 
-        if phase == 0:
-            arch_last = single
-        else:
-            arch_last = enta
-        with open(filename[phase], 'rb') as file:
-            search_space = pickle.load(file)
+        arch_last = single + enta
+        
+        with open('search_space/search_space_mnist_4', 'rb') as file:
+            self.search_space = pickle.load(file)
          # remove last configuration
         for i in range(len(arch_last)):
             try:
-                search_space.remove(arch_last[i])
+                self.search_space.remove(arch_last[i])
             except ValueError:
                 pass
-        self.search_space = [x for x in search_space if x[0] not in qubits]       
+        self.search_space = [x for x in self.search_space if [x[0]] not in self.qubit_used]       
 
         random.seed(self.ITERATION)
 
@@ -209,6 +212,49 @@ class MCTS:
         # print("\ncollect " + str(len(self.TASK_QUEUE)) + " nets for re-initializing MCTS {}".format(self.ROOT.base_code))
 
         self.qubit_used = qubits
+
+    def get_grad(self, x):
+        
+        model = self.ROOT.classifier.model
+        loss_fn = nn.CrossEntropyLoss()
+        optimizer = torch.optim.Adam(model.parameters())
+
+        x = self.nodes[0].classifier.arch_to_z([x]).cuda()
+        x.requires_grad_(True)
+        x.retain_grad()
+        n_heads = 3
+        y = torch.tensor([[1, 1, 1]]).cuda()
+
+        # clear grads        
+        optimizer.zero_grad()
+
+        # forward to get predicted values
+        outputs = model(x)
+        loss = loss_fn(outputs[0], y.long())
+        loss.backward(retain_graph=True)
+        return x, x.grad
+
+    def Langevin_update(self, x, n_steps=20, step_size=0.01):
+        
+        target_snr = 0.1
+        
+        # alpha = torch.ones_like(t)
+
+        for i in range(n_steps):
+
+            x, grad = self.get_grad(x)
+            noise = torch.randn_like(grad)
+            
+            grad_norm = torch.norm(grad.reshape(grad.shape[0], -1), dim=-1).mean()
+            noise_norm = torch.norm(noise.reshape(noise.shape[0], -1), dim=-1).mean()
+
+            step_size = (target_snr * noise_norm / grad_norm) ** 2 * 2
+            x_mean = x + step_size * grad
+            # x = x_mean + torch.sqrt(step_size * 2) * noise
+            x = x_mean + noise
+
+        return x, x_mean
+
     def dump_all_states(self, num_samples):
         node_path = 'states/mcts_agent'
         self.reset_node_data()
@@ -221,11 +267,12 @@ class MCTS:
             i.clear_data()
 
     def set_arch(self, phase, best_change):
-        if phase == 0:            
-            self.explorations['enta'] = best_change
+        # if phase == 0:
+        if len(best_change[0]) == len(self.explorations['single'][0]):          
+            self.explorations['single'] = best_change
             # self.explorations['single'] = None
         else:
-            self.explorations['single'] = best_change
+            self.explorations['enta'] = best_change
             # self.explorations['enta'] = None
 
         self.explorations['phase'] = phase        
@@ -347,7 +394,8 @@ class MCTS:
             sample_node = self.sample_nodes.pop()
             if type(job[0]) != type([]):
                 job = [job]            
-            if self.explorations['phase'] == 0:
+            # if self.explorations['phase'] == 0:
+            if len(job[0]) == len(self.explorations['single'][0]):
                 single = self.insert_job(self.explorations['single'], job)
                 enta = self.explorations['enta']
             else:
@@ -372,18 +420,18 @@ class MCTS:
             arch_str = json.dumps(np.int8(arch).tolist())
             
             # self.DISPATCHED_JOB[job_str] = acc
-            if self.task != 'MOSI':
-                exploration, gate_numbers = count_gates(arch, self.explorations['rate'])
-            else:
-                if self.explorations['phase'] == 0:
-                    zero_counts = [job[i].count(0) for i in range(len(job))]
-                    gate_reduced = np.sum(zero_counts)
-                else:
-                    zero_counts = [(job[i].count(job[i][0])-1) for i in range(len(job))]
-                    gate_reduced = np.sum(zero_counts)
-                exploration = gate_reduced * self.explorations['rate_decay'][self.stages]
-            p_acc = acc - exploration
-            # p_acc = acc
+            # if self.task != 'MOSI':
+            #     exploration, gate_numbers = count_gates(arch, self.explorations['rate'])
+            # else:
+            #     if self.explorations['phase'] == 0:
+            #         zero_counts = [job[i].count(0) for i in range(len(job))]
+            #         gate_reduced = np.sum(zero_counts)
+            #     else:
+            #         zero_counts = [(job[i].count(job[i][0])-1) for i in range(len(job))]
+            #         gate_reduced = np.sum(zero_counts)
+            #     exploration = gate_reduced * self.explorations['rate_decay'][self.stages]
+            # p_acc = acc - exploration
+            p_acc = acc
             self.samples[arch_str] = p_acc
             self.samples_true[arch_str] = acc
             self.samples_compact[job_str] = p_acc
@@ -410,8 +458,8 @@ class MCTS:
             period = 5
             number = 50
         else:
-            period = 3
-            number = 10
+            period = 1
+            number = 20
 
         if (self.ITERATION % period == 0): 
             if self.ITERATION == 0:
@@ -467,7 +515,7 @@ class MCTS:
         # sampling_node(self, nodes, dataset, self.ITERATION)
         
         random.seed(self.ITERATION)
-        self.sampling_arch(10)                         
+        self.sampling_arch(10)
 
 
 def Scheme_mp(design, job, task, weight, i, q=None):
@@ -536,30 +584,26 @@ def create_agent(task, arch_code, pre_file, node=None):
         n_single = int(n_qubit/2)
         n_enta = int(n_qubit/2)
         
-        with open(path[0], 'rb') as file:
-            search_space_single = pickle.load(file)        
+        with open('search_space/search_space_mnist_4', 'rb') as file:
+            search_space = pickle.load(file)
 
-        with open(path[1], 'rb') as file:
-            search_space_enta = pickle.load(file)
+        n_qubits = arch_code[0]
+        n_layers = arch_code[1]
+        
+        if task == 'MNIST-10':
+            with open('search_space/search_space_mnist_10', 'rb') as file:
+                search_space = pickle.load(file)
+            n_qubits = 5
+        
 
-        agent = MCTS(search_space_single, 4, args.fold, arch_code)
+        agent = MCTS(search_space, 4, args.fold, arch_code)
         agent.task = task
 
         if pre_file in init_weights:
             agent.nodes[0].classifier.model.load_state_dict(torch.load(os.path.join(init_weight_path, pre_file)), strict= True)
-
-        # empty = empty_arch(n_layer, n_qubit)   #layers, qubits
-        # qubits = random.sample([i for i in range(1, n_qubit+1)],n_single)
-        # single = sampling_qubits(search_space_single, qubits)
-
-        # qubits = random.sample([i for i in range(1, n_qubit+1)],n_enta)
-        # enta = sampling_qubits(search_space_enta, qubits)
-
-        # single = agent.insert_job(empty[0], single)
-        # enta = agent.insert_job(empty[1], enta)
-
+       
         # strong entanglement
-        n_qubits = arch_code[0]
+        # n_qubits = arch_code[0]
         n_layers = arch_code[1]
         
         single = [[i]+[1]*2*n_layers for i in range(1,n_qubits+1)]
@@ -598,12 +642,13 @@ if __name__ == '__main__':
 
     args_c = parser.parse_args()
     task = args_c.task
+    # task = 'MNIST-10'
     task = 'MNIST'
 
     mp.set_start_method('spawn')
 
     saved = None
-    # saved = 'states/mcts_agent_40'
+    # saved = 'states/mcts_agent_20'
     
     if task != 'MOSI':
         from schemes import Scheme, Scheme_eval
@@ -628,20 +673,25 @@ if __name__ == '__main__':
     ITERATION = agent.ITERATION
      
 
-    for iter in range(ITERATION, 100):
+    for iter in range(ITERATION, 50):
         jobs, designs, archs, nodes = agent.early_search(iter)
         results = {}
         n_jobs = len(jobs)
         step = n_jobs // num_processes
-        res = n_jobs % num_processes        
-        with Manager() as manager:
-            q = manager.Queue()
-            with mp.Pool(processes = num_processes) as pool:        
-                pool.starmap(Scheme_mp, [(designs[i*step : (i+1)*step], jobs[i*step : (i+1)*step], task, agent.weight, i, q) for i in range(num_processes)])            
-                pool.starmap(Scheme_mp, [(designs[n_jobs-i-1 : n_jobs-i], jobs[i*step : (i+1)*step], task, agent.weight, n_jobs-i-1, q) for i in range(res)])
-            while not q.empty():
-                [i, acc] = q.get()
-                results[i] = acc     
+        res = n_jobs % num_processes
+        debug = False
+        if not debug:
+            with Manager() as manager:
+                q = manager.Queue()
+                with mp.Pool(processes = num_processes) as pool:        
+                    pool.starmap(Scheme_mp, [(designs[i*step : (i+1)*step], jobs[i*step : (i+1)*step], task, agent.weight, i, q) for i in range(num_processes)])            
+                    pool.starmap(Scheme_mp, [(designs[n_jobs-i-1 : n_jobs-i], jobs[i*step : (i+1)*step], task, agent.weight, n_jobs-i-1, q) for i in range(res)])
+                while not q.empty():
+                    [i, acc] = q.get()
+                    results[i] = acc
+        else:
+            for i in range(n_jobs):
+                results[i] = random.uniform(0.75, 0.8)
 
         agent.late_search(jobs, results, archs, nodes)
 
