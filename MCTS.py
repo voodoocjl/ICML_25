@@ -19,6 +19,7 @@ from draw import plot_2d_array
 from Arguments import Arguments
 import argparse
 import torch.nn as nn
+from GVAE_model import is_valid_ops_adj
 
 class MCTS:
     def __init__(self, search_space, tree_height, fold, arch_code):
@@ -74,6 +75,7 @@ class MCTS:
         self.history = [[] for i in range(2)]
         self.qubit_used = []
         self.period = 1
+        self.fold = fold
 
     def init_train(self, numbers=50):
         
@@ -150,7 +152,9 @@ class MCTS:
         self.weight = best_model.state_dict()
         self.samples_true[json.dumps(np.int8(arch).tolist())] = report['mae']
         self.samples_compact = {}
+        
         arch_next = self.Langevin_update(arch)
+        print(len(arch_next))
 
         if report['mae'] > self.best['acc']:
             if self.task != 'MOSI':
@@ -234,18 +238,20 @@ class MCTS:
         loss.backward(retain_graph=True)
         return x, x.grad
 
-    def Langevin_update(self, x, n_steps=20, step_size=0.01):
-        
+    def Langevin_update(self, x, n_steps=20, step_size=0.01):        
         snr = 10
         x = self.ROOT.classifier.arch_to_z([x])
         x_norm = torch.norm(x.reshape(x.shape[0], -1), dim=-1).mean()
         x_valid_list = []
-        for i in range(100):
-            noise = torch.randn_like(x)
+        for i in range(1000):            
+            noise = torch.randn_like(x)            
             noise_norm = torch.norm(noise.reshape(noise.shape[0], -1), dim=-1).mean()
             step_size = (1/snr * (x_norm / noise_norm)) ** 2
             x_new = x + step_size * noise
             x_new = self.ROOT.classifier.GVAE_model.decoder(x_new)
+            if is_valid_ops_adj(x_new[0],x_new[1], int(arch_code[0]/self.fold)):
+                x_valid_list.append(x_new)
+
         
         # alpha = torch.ones_like(t)
 

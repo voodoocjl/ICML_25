@@ -197,7 +197,9 @@ class Classifier:
         adj = torch.cat(adj_list, dim=0)
         ops = torch.cat(op_list, dim=0)
         adj, ops, prep_reverse = preprocessing(adj, ops, **configs[4]['prep'])
-        mu, logvar = self.GVAE_model.encoder(ops, adj)
+        encoder = self.GVAE_model.encoder
+        encoder.eval()
+        mu, logvar = encoder(ops, adj)
         return mu
     
     def predict(self, remaining, arch):

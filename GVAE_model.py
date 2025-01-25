@@ -3,7 +3,38 @@ import torch.nn as nn
 from torch.nn.parameter import Parameter
 import torch
 import torch.nn.functional as F
+import numpy as np
 
+def is_valid_circuit(adj, ops):
+    # allowed_gates = ['PauliX', 'PauliY', 'PauliZ', 'Hadamard', 'RX', 'RY', 'RZ', 'CNOT', 'CZ', 'U3', 'SWAP']
+    allowed_gates = ['Identity', 'RX', 'RY', 'RZ', 'C(U3)']    # QWAS with data uploading
+    if len(adj) != len(ops) or len(adj[0]) != len(ops):
+        return False
+    if ops[0] != 'START' or ops[-1] != 'END':
+        return False
+    for i in range(1, len(ops)-1):
+        if ops[i] not in allowed_gates:
+            return False
+    return True
+def transform_operations(max_idx):
+    transform_dict = {0: 'START', 1: 'Identity', 2: 'RX', 3: 'RY', 4: 'RZ', 5: 'C(U3)', 6: 'END'}
+    ops = []
+    for idx in max_idx:
+        ops.append(transform_dict[idx.item()])
+    return ops
+def is_valid_ops_adj(full_op,full_ad, n_qubits):
+    full_op = full_op.squeeze(0).cpu()
+    ad = full_ad.squeeze(0).cpu()
+    op = full_op[:, 0:-(n_qubits)]
+    max_idx = torch.argmax(op, dim=-1)
+    one_hot = torch.zeros_like(op)
+    for i in range(one_hot.shape[0]):
+        one_hot[i][max_idx[i]] = 1
+    op_decode = transform_operations(max_idx)
+    ad_decode = (ad > 0.5).int().triu(1).numpy()
+    ad_decode = np.ndarray.tolist(ad_decode)
+    res= is_valid_circuit(ad_decode, op_decode)
+    return res
 
 def stacked_spmm(A, B):
     assert A.dim()==3
@@ -181,3 +212,20 @@ class Decoder(nn.Module):
         ops = self.weight(embedding)
         adj = torch.matmul(embedding, embedding.permute(0, 2, 1))
         return self.activation_adj(ops), self.activation_adj(adj)
+
+class VAEReconstructed_Loss(object):
+    def __init__(self, w_ops=1.0, w_adj=1.0, loss_ops=None, loss_adj=None):
+        super().__init__()
+        self.w_ops = w_ops
+        self.w_adj = w_adj
+        self.loss_ops = loss_ops
+        self.loss_adj = loss_adj
+
+    def __call__(self, inputs, targets, mu, logvar):
+        ops_recon, adj_recon = inputs[0], inputs[1]
+        ops, adj = targets[0], targets[1]
+        loss_ops = self.loss_ops(ops_recon, ops)
+        loss_adj = self.loss_adj(adj_recon, adj)
+        loss = self.w_ops * loss_ops + self.w_adj * loss_adj
+        KLD = -0.5 / (ops.shape[0] * ops.shape[1]) * torch.mean(torch.sum(1 + 2 * logvar - mu.pow(2) - logvar.exp().pow(2), 2))
+        return loss + KLD
