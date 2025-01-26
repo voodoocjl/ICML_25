@@ -45,8 +45,7 @@ class Node:
         self.classifier    = Classifier({}, self.ARCH_CODE, self.id, tree_height, fold)
 
         self.base_code     = None        
-        # self.explorations = {'phase': 0, 'iteration': 0, 'single':None, 'enta': None, 'rate': 0.006, 'rate_decay': [0.006, 0.004, 0.002, 0]}
-
+       
         # insert current node into the kids of parent
         if parent is not None:
             self.parent.kids.append(self)

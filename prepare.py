@@ -47,5 +47,12 @@ def empty_arch(n_layers, n_qubits):
 
 check_file('MNIST')
 
+def get_list_dimensions(lst):
+    if isinstance(lst, list):
+        if len(lst) == 0:
+            return 1
+        return 1 + get_list_dimensions(lst[0])
+    return 0
+
 
 

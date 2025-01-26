@@ -22,6 +22,82 @@ def transform_operations(max_idx):
     for idx in max_idx:
         ops.append(transform_dict[idx.item()])
     return ops
+
+# def generate_single_enta(op_results, n_qubits):
+#     n_layers = int(len(op_results) / (2 * n_qubits))
+#     single=[[i]+[-1]*2*n_layers for i in range(1,1+n_qubits)]
+#     enta=[[i]+[-1]*n_layers for i in range(1,1+n_qubits)]
+#     for i in range(0,len(op_results),2*n_qubits):
+#         for j in range(0, n_qubits):
+#             op = op_results[i + j]
+#             if (len(op[-1]) == 1):
+#                 col=int(i / n_layers)
+#                 row=op[-1][0]
+#                 single[row][1+col]= int('data' in op_results[i+j])
+#                 single[row][2+col]=int('U3' in op_results[i+j])
+#         for j in range(n_qubits, 2*n_qubits):
+#             op = op_results[i + j]
+#             if len(op[-1])==2 and 'C(U3)' in op:
+#                 row,num=op[-1]
+#                 col=int(i/(n_layers*2))
+#                 enta[row][1+col]=num+1
+def generate_single_enta(full_op, n_qubits):
+    full_op = full_op.squeeze(0).cpu()    
+    op = full_op[:, 0:-(n_qubits)]
+    max_idx = torch.argmax(op, dim=-1)    
+    op_decode = transform_operations(max_idx)
+    op_decode_check=op_decode
+    op_results = []
+    qubit_choices = full_op[:, -(n_qubits):]
+    for i in range(qubit_choices.size(0)):
+        if op_decode_check[i] == 'C(U3)':
+            # Select the two largest values and sort indices by value
+            # Control qubit takes the largest value, target qubit takes the second largest
+            values, indices = torch.topk(qubit_choices[i], 2)
+            indices = indices[values.argsort(descending=True)]
+            op_results.append((op_decode[i], indices.tolist()))
+        elif op_decode_check[i] == 'RX':
+            values, indices = torch.topk(qubit_choices[i], 1)
+            op_results.append(('U3', indices.tolist()))
+        elif op_decode_check[i] == 'Identity':
+            # If 'Identity' in single-qubit position
+            if (i-1)%(n_qubits*2) < n_qubits:
+                values, indices = torch.topk(qubit_choices[i], 1)
+                op_results.append(('Identity', indices.tolist()))
+            # If 'Identity' in double-qubit position
+            else:
+                values, indices = torch.topk(qubit_choices[i], 2)
+                indices = indices[values.argsort(descending=True)]
+                op_results.append(('Identity', indices.tolist()))
+        elif op_decode_check[i] == 'RY':
+            values, indices = torch.topk(qubit_choices[i], 1)
+            op_results.append(('data', indices.tolist()))
+        elif op_decode_check[i] == 'RZ':
+            values, indices = torch.topk(qubit_choices[i], 1)
+            op_results.append(('data','U3', indices.tolist()))
+        else:
+            pass  # Skip 'START', 'END' and 'Identity' as they do not change the state
+    n_layers = int(len(op_results) / (2 * n_qubits))
+    
+    single=np.array([[i]+[-1]*2*n_layers for i in range(1,1+n_qubits)])
+    enta=np.array([[i]+[-1]*n_layers for i in range(1,1+n_qubits)])
+    
+    for i in range(0,len(op_results),2*n_qubits):
+        for j in range(0, n_qubits):
+            op = op_results[i + j]
+            if (len(op[-1]) == 1):
+                col=int(i / n_layers)
+                row=op[-1][0]
+                single[row][1+col]= int('data' in op_results[i+j])
+                single[row][2+col]=int('U3' in op_results[i+j])
+        for j in range(n_qubits, 2*n_qubits):
+            op = op_results[i + j]
+            if len(op[-1])==2 and 'C(U3)' in op:
+                row,num=op[-1]
+                col=int(i/(n_layers*2))
+                enta[row][1+col]=num+1
+    return single,enta
+
 def is_valid_ops_adj(full_op,full_ad, n_qubits):
     full_op = full_op.squeeze(0).cpu()
     ad = full_ad.squeeze(0).cpu()
@@ -34,6 +110,7 @@ def is_valid_ops_adj(full_op,full_ad, n_qubits):
     ad_decode = (ad > 0.5).int().triu(1).numpy()
     ad_decode = np.ndarray.tolist(ad_decode)
     res= is_valid_circuit(ad_decode, op_decode)
+            
     return res
 
 def stacked_spmm(A, B):

@@ -19,7 +19,7 @@ from draw import plot_2d_array
 from Arguments import Arguments
 import argparse
 import torch.nn as nn
-from GVAE_model import is_valid_ops_adj
+from GVAE_model import is_valid_ops_adj, generate_single_enta
 
 class MCTS:
     def __init__(self, search_space, tree_height, fold, arch_code):
@@ -76,6 +76,7 @@ class MCTS:
         self.qubit_used = []
         self.period = 1
         self.fold = fold
+        self.failure = 0
 
     def init_train(self, numbers=50):
         
@@ -102,40 +103,50 @@ class MCTS:
         # strategy = 'base'
         strategy = self.weight
         round = 3
+        qubits = []
+        
 
         file_single = args.file_single
         file_enta = args.file_enta
         if self.task != 'MOSI':
             sorted_changes = [k for k, v in sorted(self.samples_compact.items(), key=lambda x: x[1], reverse=True)]
-            epochs = 1
+            epochs = 20
             samples = 20            
         else:
             sorted_changes = [k for k, v in sorted(self.samples_compact.items(), key=lambda x: x[1])]
             epochs = 3
             samples = 30
-        sorted_changes = [change for change in sorted_changes if len(eval(change)) == self.stages]
+        # sorted_changes = [change for change in sorted_changes if len(eval(change)) == self.stages]
 
-        filename = [file_single, file_enta]
+        # filename = [file_single, file_enta]
 
         # pick best 2 and randomly choose one
         random.seed(self.ITERATION)
         
         best_changes = [eval(sorted_changes[i]) for i in range(1)]
         best_change = random.choice(best_changes)
-        self.ROOT.base_code = best_change
-        qubits = [code[0] for code in self.ROOT.base_code]
+        explicit = (get_list_dimensions(best_change) < 3)
+        if explicit:
+            self.ROOT.base_code = best_change
+            qubits = [code[0] for code in self.ROOT.base_code]
         
-        print('Current Change: ', best_change)
+            print('Current Change: ', best_change)
        
-        # if phase == 0:
-        if len(best_change[0]) == len(self.explorations['single'][0]):
-            best_change_full = self.insert_job(self.explorations['single'], best_change)
-            single = best_change_full
+            # if phase == 0:
+            if len(best_change[0]) == len(self.explorations['single'][0]):
+                best_change_full = self.insert_job(self.explorations['single'], best_change)
+                self.explorations['single'] = best_change_full                
+            else:
+                best_change_full = self.insert_job(self.explorations['enta'], best_change)
+                self.explorations['enta'] = best_change_full
+            single = self.explorations['single']
             enta = self.explorations['enta']
         else:
-            best_change_full = self.insert_job(self.explorations['enta'], best_change)
-            single = self.explorations['single']
-            enta = best_change_full
+            print('Explicit Switch:', best_change)
+            single = best_change[0]
+            enta = best_change[1]
+            self.explorations['single'] = single
+            self.explorations['enta'] = enta
         arch = cir_to_matrix(single, enta, self.ARCH_CODE, args.fold)
         # plot_2d_array(arch)
         design = translator(single, enta, 'full', self.ARCH_CODE, args.fold)
@@ -153,50 +164,74 @@ class MCTS:
         self.samples_true[json.dumps(np.int8(arch).tolist())] = report['mae']
         self.samples_compact = {}
         
-        arch_next = self.Langevin_update(arch)
-        print(len(arch_next))
-
-        if report['mae'] > self.best['acc']:
-            if self.task != 'MOSI':
+        if self.task != 'MOSI':
+            if report['mae'] > self.best['acc']:
                 self.best['acc'] = report['mae']
                 self.best['model'] = arch
-        else:
-            if self.task == 'MOSI':
+                self.failure = 0
+            else:
+                self.failure += 1
+        if self.task == 'MOSI':
+            if report['mae'] < self.best['acc']:
                 self.best['acc'] = report['mae']
                 self.best['model'] = arch
+                self.failure = 0
+            else:
+                self.failure += 1
 
         with open('results/{}_fine.csv'.format(self.task), 'a+', newline='') as res:
             writer = csv.writer(res)
             metrics = report['mae']
-            writer.writerow([self.ITERATION, best_change_full, metrics])        
+            if not explicit:
+                best_change_full = best_change
+            writer.writerow([self.ITERATION, best_change_full, metrics])
         
-        if self.stages == self.period:
-            self.stages = 0
-            self.history.append(qubits)            
-            phase = 1 - phase       # switch phase
-            self.ROOT.base_code = None
-            # if self.history[phase] != []:
-            #     qubits = self.history[phase][-1]
-            # else:
-            #     qubits = []
-            # qubits = []
-            self.qubit_used = self.history[-2:]
-            self.set_arch(phase, best_change_full)
+        if self.failure == 3:
+            explicit = False
+        else:
+            explicit = True
+        
+        if explicit:
+            if self.stages == self.period:
+                self.stages = 0
+                self.history.append(qubits)            
+                phase = 1 - phase       # switch phase
+                self.ROOT.base_code = None               
+                self.qubit_used = self.history[-2:]
+                # self.set_arch(phase, best_change_full)
+                self.samples_compact = {}
+                self.explorations['iteration'] += 1
+                print(Color.BLUE + 'Phase Switch: {}'.format(phase) + Color.RESET)
+
+            arch_last = single + enta
+            
+            with open('search_space/search_space_mnist_4', 'rb') as file:
+                self.search_space = pickle.load(file)
+            # remove last configuration
+            for i in range(len(arch_last)):
+                try:
+                    self.search_space.remove(arch_last[i])
+                except ValueError:
+                    pass
+            self.search_space = [x for x in self.search_space if [x[0]] not in self.qubit_used]
+        else:
+            self.search_space = []
+            self.qubit_used = []
             self.samples_compact = {}
             self.explorations['iteration'] += 1
-            print(Color.BLUE + 'Phase Switch: {}'.format(phase) + Color.RESET)
+            self.ROOT.base_code = None
+            self.explorations['single'] = None
+            self.explorations['enta'] = None
+            self.history = [[] for i in range(2)]
+            self.stages = 0
+            self.failure = 0
+            print(Color.BLUE + 'Implicit Switch' + Color.RESET)
 
-        arch_last = single + enta
-        
-        with open('search_space/search_space_mnist_4', 'rb') as file:
-            self.search_space = pickle.load(file)
-         # remove last configuration
-        for i in range(len(arch_last)):
-            try:
-                self.search_space.remove(arch_last[i])
-            except ValueError:
-                pass
-        self.search_space = [x for x in self.search_space if [x[0]] not in self.qubit_used]       
+            arch_next = self.Langevin_update(arch)
+            imp_arch_list = self.projection(arch_next, single, enta)
+            for arch in imp_arch_list:
+                self.search_space.append(arch)
+
 
         random.seed(self.ITERATION)
 
@@ -250,7 +285,8 @@ class MCTS:
             x_new = x + step_size * noise
             x_new = self.ROOT.classifier.GVAE_model.decoder(x_new)
             if is_valid_ops_adj(x_new[0],x_new[1], int(arch_code[0]/self.fold)):
-                x_valid_list.append(x_new)
+                single,enta = generate_single_enta(x_new[0], args.n_qubits)
+                x_valid_list.append([single, enta])
 
         
         # alpha = torch.ones_like(t)
@@ -378,7 +414,8 @@ class MCTS:
                             break
                         else:
                             continue
-            if type(sampled_arch[0]) == type([]):
+            # if type(sampled_arch[0]) == type([]):
+            if get_list_dimensions(sampled_arch) == 2:
                 arch = sampled_arch[-1]
             else:
                 arch = sampled_arch
@@ -410,12 +447,16 @@ class MCTS:
             if type(job[0]) != type([]):
                 job = [job]            
             # if self.explorations['phase'] == 0:
-            if len(job[0]) == len(self.explorations['single'][0]):
-                single = self.insert_job(self.explorations['single'], job)
-                enta = self.explorations['enta']
+            if self.explorations['single'] != None:
+                if len(job[0]) == len(self.explorations['single'][0]):
+                    single = self.insert_job(self.explorations['single'], job)
+                    enta = self.explorations['enta']
+                else:
+                    single = self.explorations['single']
+                    enta = self.insert_job(self.explorations['enta'], job)
             else:
-                single = self.explorations['single']
-                enta = self.insert_job(self.explorations['enta'], job)
+                single = job[0]
+                enta = job[1]
             design = translator(single, enta, 'full', self.ARCH_CODE, args.fold)
             arch = cir_to_matrix(single, enta, self.ARCH_CODE, args.fold)
             
@@ -530,7 +571,20 @@ class MCTS:
         # sampling_node(self, nodes, dataset, self.ITERATION)
         
         random.seed(self.ITERATION)
-        self.sampling_arch(10)
+        # self.sampling_arch(10)
+    
+    def projection(self, arch_next, single, enta):
+        # Define the projection logic here
+        single = sorted(single, key=lambda x: x[0])
+        enta = sorted(enta, key=lambda x: x[0])
+        single = np.array(single)
+        enta = np.array(enta)
+        projected_archs = []
+        for arch in arch_next:
+            new_single = single * (arch[0]==-1) + arch[0] * (arch[0]!=-1)
+            new_enta = enta * (arch[1]==-1) + arch[1] * (arch[1]!=-1)
+            projected_archs.append([new_single.tolist(), new_enta.tolist()])
+        return projected_archs
 
 
 def Scheme_mp(design, job, task, weight, i, q=None):
@@ -694,7 +748,7 @@ if __name__ == '__main__':
         n_jobs = len(jobs)
         step = n_jobs // num_processes
         res = n_jobs % num_processes
-        debug = True
+        debug = False
         if not debug:
             with Manager() as manager:
                 q = manager.Queue()

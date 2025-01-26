@@ -206,15 +206,21 @@ class Classifier:
         assert type(remaining) == type({})
         remaining_archs = []
         adj_list, op_list = [], []
-        for k, v in remaining.items():
-            net = json.loads(k)
-            if len(net) == len(arch['single'][0]):            
-                net = insert_job(arch['single'], net) 
-                net = cir_to_matrix(net, arch['enta'], self.arch_code, self.fold)
-            else:
-                net = insert_job(arch['enta'], net)
-                net = cir_to_matrix(arch['single'], net, self.arch_code, self.fold)
-            remaining_archs.append(net)
+        if arch['single'] != None:
+            for k, v in remaining.items():
+                net = json.loads(k)
+                if len(net) == len(arch['single'][0]):            
+                    net = insert_job(arch['single'], net) 
+                    net = cir_to_matrix(net, arch['enta'], self.arch_code, self.fold)
+                else:
+                    net = insert_job(arch['enta'], net)
+                    net = cir_to_matrix(arch['single'], net, self.arch_code, self.fold)
+                remaining_archs.append(net)
+        else:
+            for k, v in remaining.items():
+                net = json.loads(k)
+                net = cir_to_matrix(net[0], net[1], self.arch_code, self.fold)
+                remaining_archs.append(net)
             
         remaining_archs = self.arch_to_z(remaining_archs)
         
