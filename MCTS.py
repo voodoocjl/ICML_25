@@ -68,7 +68,8 @@ class MCTS:
 
         self.ROOT = self.nodes[0]
         self.CURT = self.ROOT
-        self.weight = 'init'        
+        self.weight = 'init'
+        self.best_model_weight = None
         self.explorations = {'phase': 0, 'iteration': 0, 'single':None, 'enta': None, 'rate': [0.001, 0.0005, 0.002], 'rate_decay': [0.006, 0.004, 0.002, 0]}
         self.best = {'acc': 0, 'model':[]}
         self.task = ''
@@ -168,6 +169,7 @@ class MCTS:
             if report['mae'] > self.best['acc']:
                 self.best['acc'] = report['mae']
                 self.best['model'] = arch
+                self.best_model_weight = best_model.state_dict()
                 self.failure = 0
             else:
                 self.failure += 1
@@ -186,7 +188,7 @@ class MCTS:
                 best_change_full = best_change
             writer.writerow([self.ITERATION, best_change_full, metrics])
         
-        if self.failure == 3:
+        if self.failure == 5:
             explicit = False
         else:
             explicit = True
@@ -225,9 +227,10 @@ class MCTS:
             self.history = [[] for i in range(2)]
             self.stages = 0
             self.failure = 0
+            self.weight = self.best_model_weight
             print(Color.BLUE + 'Implicit Switch' + Color.RESET)
 
-            arch_next = self.Langevin_update(arch)
+            arch_next = self.Langevin_update(self.best['model'])
             imp_arch_list = self.projection(arch_next, single, enta)
             for arch in imp_arch_list:
                 self.search_space.append(arch)
@@ -591,12 +594,15 @@ def Scheme_mp(design, job, task, weight, i, q=None):
     step = len(design)    
     if task != 'MOSI':
         from schemes import Scheme
-        epoch = 1
+        if get_list_dimensions(job[0]) < 3:
+            epoch = 1
+        else:
+            epoch = 3
     else:
         from schemes_mosi import Scheme
         epoch = 3
     for j in range(step):
-        print('Arch:', job[j][-1])
+        print('Arch:', job[j])
         _, report = Scheme(design[j], task, weight, epoch, verbs=1)
         q.put([i*step+j, report['mae']])
 

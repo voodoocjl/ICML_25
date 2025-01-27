@@ -132,7 +132,7 @@ class Classifier:
 
     def train(self):
         
-        self.epochs = 100
+        self.epochs = 1000
         
         # in a rare case, one branch has no networks
         if len(self.nets) == 0:
@@ -236,7 +236,7 @@ class Classifier:
         if torch.cuda.is_available():
             remaining_archs = remaining_archs.cpu()
             # outputs         = outputs.cpu()
-        diff = -(outputs[0][:, 0, :] - outputs[0][:, 1, :]).abs().detach().cpu()
+        diff = -((outputs[0][:, 0, :] - outputs[0][:, 1, :]) / 2).abs().detach().cpu()
         result = []        
         result.append(list(remaining.keys()))
         result.append(outputs[1].tolist())
