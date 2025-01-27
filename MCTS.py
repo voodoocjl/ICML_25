@@ -284,7 +284,7 @@ class MCTS:
         for i in range(1000):            
             noise = torch.randn_like(x)            
             noise_norm = torch.norm(noise.reshape(noise.shape[0], -1), dim=-1).mean()
-            step_size = (1/snr * (x_norm / noise_norm)) ** 2
+            step_size = (x_norm / noise_norm) / snr
             x_new = x + step_size * noise
             x_new = self.ROOT.classifier.GVAE_model.decoder(x_new)
             if is_valid_ops_adj(x_new[0],x_new[1], int(arch_code[0]/self.fold)):
