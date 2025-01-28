@@ -86,15 +86,19 @@ def generate_single_enta(full_op, n_qubits):
         for j in range(0, n_qubits):
             op = op_results[i + j]
             if (len(op[-1]) == 1):
-                col=int(i / n_layers)
+                col=int(i / n_qubits)
                 row=op[-1][0]
                 single[row][1+col]= int('data' in op_results[i+j])
                 single[row][2+col]=int('U3' in op_results[i+j])
         for j in range(n_qubits, 2*n_qubits):
             op = op_results[i + j]
-            if len(op[-1])==2 and 'C(U3)' in op:
-                row,num=op[-1]
-                col=int(i/(n_layers*2))
+            if len(op[-1])==2:
+                if 'C(U3)' in op: 
+                    row,num=op[-1]
+                if 'Identity' in op:
+                    row = op[-1][0]
+                    num = row
+                col=int(i/(n_qubits*2))
                 enta[row][1+col]=num+1
     return single,enta
 

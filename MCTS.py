@@ -288,10 +288,9 @@ class MCTS:
             x_new = x + step_size * noise
             x_new = self.ROOT.classifier.GVAE_model.decoder(x_new)
             if is_valid_ops_adj(x_new[0],x_new[1], int(arch_code[0]/self.fold)):
-                single,enta = generate_single_enta(x_new[0], args.n_qubits)
+                single,enta = generate_single_enta(x_new[0], int(args.n_qubits/args.fold))
                 x_valid_list.append([single, enta])
 
-        
         # alpha = torch.ones_like(t)
 
         # for i in range(n_steps):
@@ -717,8 +716,8 @@ if __name__ == '__main__':
 
     args_c = parser.parse_args()
     task = args_c.task
-    # task = 'MNIST-10'
-    task = 'MNIST'
+    task = 'MNIST-10'
+    # task = 'MNIST'
 
     mp.set_start_method('spawn')
 

@@ -98,8 +98,8 @@ class Classifier:
         self.mean             = 0        
         self.period           = 10
 
-        checkpoint = torch.load('pretrained/best_model.pt', map_location=torch.device('cpu'))
-        # checkpoint = torch.load('pretrained/5_best_model.pt', map_location=torch.device('cpu'))
+        # checkpoint = torch.load('pretrained/best_model.pt', map_location=torch.device('cpu'))
+        checkpoint = torch.load('pretrained/5_best_model.pt', map_location=torch.device('cpu'))
 
         input_dim = 2 + 5 + int(self.arch_code[0]/self.fold)
         self.GVAE_model = GVAE((input_dim, 32, 64, 128, 64, 32, 16), normalize=True, dropout=0.3, **configs[4]['GAE'])
