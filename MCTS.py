@@ -70,7 +70,7 @@ class MCTS:
         self.CURT = self.ROOT
         self.weight = 'init'
         self.best_model_weight = None
-        self.explorations = {'phase': 0, 'iteration': 0, 'single':None, 'enta': None, 'rate': [0.001, 0.0005, 0.002], 'rate_decay': [0.006, 0.004, 0.002, 0]}
+        self.explorations = {'phase': 0, 'iteration': 0, 'single':None, 'enta': None, 'rate': [0.001, 0.002, 0.002], 'rate_decay': [0.006, 0.004, 0.002, 0]}
         self.best = {'acc': 0, 'model':[]}
         self.task = ''
         self.history = [[] for i in range(2)]
@@ -111,7 +111,7 @@ class MCTS:
         file_enta = args.file_enta
         if self.task != 'MOSI':
             sorted_changes = [k for k, v in sorted(self.samples_compact.items(), key=lambda x: x[1], reverse=True)]
-            epochs = 20
+            epochs = 1
             samples = 20            
         else:
             sorted_changes = [k for k, v in sorted(self.samples_compact.items(), key=lambda x: x[1])]
@@ -288,7 +288,7 @@ class MCTS:
             x_new = x + step_size * noise
             x_new = self.ROOT.classifier.GVAE_model.decoder(x_new)
             if is_valid_ops_adj(x_new[0],x_new[1], int(arch_code[0]/self.fold)):
-                single,enta = generate_single_enta(x_new[0], int(args.n_qubits/args.fold))
+                single,enta, _ = generate_single_enta(x_new[0], int(args.n_qubits/args.fold))
                 x_valid_list.append([single, enta])
 
         # alpha = torch.ones_like(t)
@@ -478,18 +478,12 @@ class MCTS:
             arch_str = json.dumps(np.int8(arch).tolist())
             
             # self.DISPATCHED_JOB[job_str] = acc
-            # if self.task != 'MOSI':
-            #     exploration, gate_numbers = count_gates(arch, self.explorations['rate'])
-            # else:
-            #     if self.explorations['phase'] == 0:
-            #         zero_counts = [job[i].count(0) for i in range(len(job))]
-            #         gate_reduced = np.sum(zero_counts)
-            #     else:
-            #         zero_counts = [(job[i].count(job[i][0])-1) for i in range(len(job))]
-            #         gate_reduced = np.sum(zero_counts)
-            #     exploration = gate_reduced * self.explorations['rate_decay'][self.stages]
-            # p_acc = acc - exploration
-            p_acc = acc
+            if self.task != 'MOSI':
+                exploration, gate_numbers = count_gates(arch, self.explorations['rate'])
+                print('arch:', job_str)
+                print('Exploration:', acc / exploration)
+            
+            p_acc = acc * (1 + 1/exploration)
             self.samples[arch_str] = p_acc
             self.samples_true[arch_str] = acc
             self.samples_compact[job_str] = p_acc
@@ -506,7 +500,7 @@ class MCTS:
             # self.explorations[job_str]   = ((abs(np.subtract(self.topology[job[0]], job))) % 2.4).round().sum()
             
 
-    def early_search(self, iter):       
+    def pre_search(self, iter):       
         # save current state
         self.ITERATION = iter
         if self.ITERATION > 0:
@@ -532,7 +526,7 @@ class MCTS:
 
         return jobs, designs, archs, nodes
     
-    def late_search(self, jobs, results, archs, nodes):
+    def post_search(self, jobs, results, archs, nodes):
                 
         self.evaluate_jobs_after(results, jobs, archs, nodes)    
         print("\nfinished all jobs in task queue")            
@@ -596,7 +590,7 @@ def Scheme_mp(design, job, task, weight, i, q=None):
         if get_list_dimensions(job[0]) < 3:
             epoch = 1
         else:
-            epoch = 3
+            epoch = 1
     else:
         from schemes_mosi import Scheme
         epoch = 3
@@ -607,20 +601,23 @@ def Scheme_mp(design, job, task, weight, i, q=None):
 
 def count_gates(arch, coeff=None):
     # x = [item for i in [2,3,4,1] for item in [1,1,i]]
-    qubits = args.n_qubits
+    qubits = int(args.n_qubits / args.fold)
     layers = args.n_layers
-    x = [[0, 0, i]*4 for i in range(1,qubits+1)]    
+    x = [[0, 0, i]*4 for i in range(1,qubits+1)] 
     x = np.transpose(x, (1,0))
     x = np.sign(abs(x-arch))
-    if coeff != None:
-        coeff = np.reshape(coeff * 4, (-1,1))
-        y = (x * coeff).sum()
-    else:
-        y = 0
+    # if coeff != None:
+    #     coeff = np.reshape(coeff * 4, (-1,1))
+    #     y = (x * coeff).sum()
+    # else:
+    #     y = 0
     stat = {}
     stat['uploading'] = x[[3*i for i in range(layers)]].sum()
     stat['single'] = x[[3*i+1 for i in range(layers)]].sum()
     stat['enta'] = x[[3*i+2 for i in range(layers)]].sum()
+
+    y = stat['single'] + 2 * stat['enta']
+
     return y, stat
 
 def analysis_result(samples, ranks):
@@ -716,8 +713,8 @@ if __name__ == '__main__':
 
     args_c = parser.parse_args()
     task = args_c.task
-    task = 'MNIST-10'
-    # task = 'MNIST'
+    # task = 'MNIST-10'
+    task = 'MNIST'
 
     mp.set_start_method('spawn')
 
@@ -748,7 +745,7 @@ if __name__ == '__main__':
      
 
     for iter in range(ITERATION, 50):
-        jobs, designs, archs, nodes = agent.early_search(iter)
+        jobs, designs, archs, nodes = agent.pre_search(iter)
         results = {}
         n_jobs = len(jobs)
         step = n_jobs // num_processes
@@ -767,7 +764,7 @@ if __name__ == '__main__':
             for i in range(n_jobs):
                 results[i] = random.uniform(0.75, 0.8)
 
-        agent.late_search(jobs, results, archs, nodes)
+        agent.post_search(jobs, results, archs, nodes)
 
     print('The best model: ', agent.best['acc'])
     agent.dump_all_states(agent.sampling_num + len(agent.samples))
@@ -779,5 +776,3 @@ if __name__ == '__main__':
         print('({}, {}):'.format(Range[0], Range[1]), sum((value in Range)  for value in list(agent.samples_true.values())))
         print('>{}:'.format(Range[1]), sum(value > Range[1]  for value in list(agent.samples_true.values())))
         print('Gate numbers of top {}: {}'.format(rank, analysis_result(agent.samples_true, rank)))
-    
-        

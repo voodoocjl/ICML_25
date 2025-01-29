@@ -100,7 +100,7 @@ def generate_single_enta(full_op, n_qubits):
                     num = row
                 col=int(i/(n_qubits*2))
                 enta[row][1+col]=num+1
-    return single,enta
+    return single,enta, op_results
 
 def is_valid_ops_adj(full_op,full_ad, n_qubits):
     full_op = full_op.squeeze(0).cpu()
